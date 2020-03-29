@@ -1,0 +1,308 @@
+---
+layout: post
+title:  "Lagrangian Neural Networks and the Two Body Problem"
+excerpt: "A quick worked example in JAX based on Lagrangian Neural Networks"
+date:   2020-03-29 19:56:57 +0100
+thumbnail: /assets/LNN_two_body/thumbnail.png
+comments: true
+mathjax: true
+---
+
+  <video muted autoplay controls loop width="720" height="480">
+    <source src="/assets/LNN_two_body/autogradorbit.mp4" type="video/mp4" style="padding: 50px 0px 10px 0px;">
+  </video>
+<!-- <div class="thecap" style="text-align:center; display:block; margin-left: auto; margin-right: auto;"> When predictions go bad </div>
+-->
+
+<br>
+I found an interesting [paper][paper] on Lagrangian Neural Networks (LNNs).   
+Now, I'd never heard of LNNs before, but as someone in physics, it piqued my interest.  
+Lagrangians are widely used in physics, and often make it easier to express equations in convenient coordinates and to exploit symmetries which simplify calculations, but I had never seen them connected to Neural Networks before.  
+
+
+If this interests you, have a look at the excellent [blog post][blog-post] by the authors. There you'll find a quick introduction to Lagrangians, a link to the paper and a fun little notebook.
+
+Additionally, their code was written using [JAX][jax], which I want to get to know better. I attended a [statistics school][stat-school] where we got a brief introduction to JAX, but I haven't really had an opportunity to get my hands dirty with it yet.
+
+Basically JAX's main claim to fame is that it allows you to easily do automatic differentiation and vectorization (and especially on GPUs or TPUs), and all in a nice pythonic way. It's maintained by Google and is mostly used in machine learning research, as it allows for easy low level control while still enabling high performance.
+
+What follows here is not original research, just basically a worked example based on the work done by authors of the paper listed above. I copied their notebook and adapted it for the case I wanted to try. It's really just an excuse for me to get to know JAX.    
+
+In their notebook they construct the Lagrangian for a double pendulum, a classic example that I believe all undergrad physics students do at some point, as it is a real PITA to find the equations of motion in a classical Newtonian way, but a rather simple matter when using the Lagrangian formulation. The problem also cannot be analytically solved, but rather leaves you with equations of motion which are differential equations and can only be solved numerically.   
+
+One feature of a double pendulum is that it is a chaotic system, which by definition means that even small perturbations can lead to vastly different motions. This makes it a little hard to see if two methods perform similarly, as even small differences due to different numerical methods can send the pendulum on vastly different paths. In their notebook they do show this by perturbing the initial conditions by 1e-10, which is enough to alter the path the pendulum takes.
+There are other ways of evaluating performance, for example by checking whether energy is conserved, as is done in their paper.  
+
+<br>
+
+
+For everything that follows you can follow my [notebook][notebook]. Much of the code is repurposed from the original authors.  
+
+<br>
+
+## Getting equations of motion from a Lagrangian
+
+The first step in this method is to define the Lagrangian, $$\mathcal{L}$$, as simply the kinetic energy minus the potential energy:  
+
+
+
+
+$$
+\begin{equation}
+\mathcal{L} = T - V
+\label{eq:eqn1}
+\tag{1}
+\end{equation}
+$$
+
+Next is to impose the Euler-Lagrange equation:
+
+$$
+\frac{d}{dt} \frac{\partial \mathcal{L}}{\partial \dot q_j} = \frac{\partial \mathcal{L}}{\partial q_j} \tag{2}\\
+$$
+
+This so far is very much the way problems are solved the Lagrangian way. Next is usually to actually solve the equations for the particular problem you are working on, but as the paper points out, we can nicely rearrange the above to get:  
+
+
+
+$$
+\begin{align}
+\frac{d}{dt} \nabla_{\dot q} \mathcal{L} &= \nabla_{q} \mathcal{L} & \text{switch to vector notation} \quad (3)\\
+(\nabla_{\dot q}\nabla_{\dot q}^{\top}\mathcal{L})\ddot q + (\nabla_{q}\nabla_{\dot q}^{\top}\mathcal{L}) \dot q &= \nabla_q \mathcal{L} & \text{expand the time derivative }\frac{d}{dt} \quad (4)\\
+\ddot q &= (\nabla_{\dot q}\nabla_{\dot q}^{\top}\mathcal{L})^{-1}[\nabla_q \mathcal{L} - (\nabla_{q}\nabla_{\dot q}^{\top}\mathcal{L})\dot q] & \text{use a matrix inverse to solve for } \ddot q \quad (5)\\
+\end{align}
+$$  
+
+
+
+This is nice, because given the positions and velocities we can now get the accelerations, which we can integrate to get the motion of our system.  
+
+
+
+
+The nice thing about JAX is that eq. (5) is quite easy to implement:  
+
+```python
+q_tt = (
+	jax.numpy.linalg.pinv(jax.hessian(lagrangian, 1)(q, q_t)) @ (
+		jax.grad(lagrangian, 0)(q, q_t)
+		- jax.jacfwd(jax.grad(lagrangian, 1), 0)(q, q_t) @ q_t
+	)
+)
+```
+
+The nice thing about the above is that if you can define a Lagrangian, you don't even have to solve it, you can just throw a few lines of JAX at it and *voila*!
+
+## Using a neural network as a Lagrangian
+
+So the above is already quite cool, but where do neural networks come into the picture? Well, as we can use neural networks to approximate any function, why not use it as our Lagrangian?
+
+<div class="imgcap_noborder" style="display: block; margin-left: auto; margin-right: auto; width:80%">
+	<img src="/assets/LNN_two_body/LNNIdea.png">
+	<div class="thecap" style="text-align:left; display:block; margin-left: auto; margin-right: auto;"><b>Figure 1:</b> Using a Neural Network as a Lagrangian.</div>
+</div>  
+<br>
+
+
+
+The interesting thing about the above is that at each training step we run a forward pass, and then a backward pass with our condition in eq. (5) to get the predictions we need.   
+
+The gradient is then taken back the other way around, making for an unusually long step of backpropagation.    
+
+
+Great, now we can use a NN as a Lagrangian.   
+
+
+## The Two Body Problem
+
+Another classic example of why Lagrangians are useful. The two body problem is actually simple enough to be solved analytically, and is a nice easy case to visualize.
+
+Also, if a method can't solve this problem there's no chance it'll work on something more complicated.  
+
+
+For simplicity, the Lagrangian of the two body problem can be reduced to a Lagrangian that describes only the relative motion of the two particles, and can thus be simple stated in the center of mass frame as (see [here][derivation] for a derivation and explanation):
+
+$$
+\begin{equation}
+\mathcal{L} = \frac{1}{2}\mu |\mathbf{\dot{q}}|^2 - \frac{G m_1 m_2}{r}
+\label{eq:eqn6}
+\tag{6}
+\end{equation}
+$$
+
+where $$\mu = \frac{m_1 m_2}{m_1 + m_2}$$ is the reduced mass of the system and $$r = |\mathbf{q_1} - \mathbf{q_2}|$$ is the distance beetween the two bodies.
+<br>  
+Now, the above can actually be reduced even more, but for now we will leave it here.   
+
+
+
+## Autograd
+
+For the first test, we'll compare how autograd does. What I mean by autograd is by using eq. (5) to automatically calculate the equations of motion for us, rather than using equations of motion we have derived ourselves.  
+
+<div class="imgcap_noborder" style="display: block; margin-left: auto; margin-right: auto; width:80%">
+        <img src="/assets/LNN_two_body/Eautograd.png">
+</div>
+<br>
+As can be seen from the minuscule discrepancy in energy, autgrad basically does a perfect job and is within numerical error of what our equations of motion give us.
+
+
+Using the same initial conditions as above, and using data sampled from the equations of motion, we can train some networks.
+
+## Baseline NN
+
+We can also ask do we really need a Lagranian Neural Network? Can't we just try a normal neural network?  
+
+Well, let's try.
+
+<div class="imgcap_noborder" style="display: block; margin-left: auto; margin-right: auto; width:80%">
+        <img src="/assets/LNN_two_body/BaseLineIdea.png">
+        <div class="thecap" style="text-align:left; display:block; margin-left: auto; margin-right: auto;"><b>Figure 2:</b> Baseline Neural Network.</div>
+</div>
+<br>  
+
+So for the basline approach we train a NN that when given the positions ($$\mathbf{q}$$) and velocities ($$\mathbf{\dot{q}}$$).  
+The NN then predicts the accelerations ($$\mathbf{\ddot{q}}$$)  
+<br>  
+So how does it do?  
+
+
+<div class="imgcap_noborder" style="display: block; margin-left: auto; margin-right: auto; width:80%">
+        <img src="/assets/LNN_two_body/Ebaseline.png">
+</div>
+<br>
+
+Not terribly actually, but time goes on the energy of the system decays, slowly losing energy. The orbits are actually don't look too bad, but don't hold up over large time ranges.   
+
+## Lagrangian NN
+
+Now we try a Lagrangian NN as depicted in Figure 1.  
+
+Unsurprisingly the training takes significantly longer, as we need to do many more calculations. But were all those GPU cycles we burnt worth it?  
+
+<div class="imgcap_noborder" style="display: block; margin-left: auto; margin-right: auto; width:80%">
+        <img src="/assets/LNN_two_body/Elnn.png">
+</div>
+<br>
+
+The prediction isn't perfect; there seems to be a bit of oscillation around the nominal energy value, but on average the network seems to understand that energy needs to be conserved.  
+This isn't perfect though, if you extend the time far enough eventually this network will start gaining or losing energy, but it's a lot better than the baseline.
+
+## Will it perturb?
+
+So has this learned something general, or only the orbit it was taught?
+Let's slightly alter the initial conditions:
+
+<div class="imgcap_noborder" style="display: block; margin-left: auto; margin-right: auto; width:80%">
+        <img src="/assets/LNN_two_body/Elnn_per.png">
+</div>
+<br>
+
+Err, not really. How does this orbit look?
+
+  <video muted autoplay controls loop width="720" height="480">
+    <source src="/assets/LNN_two_body/per_orbit.mp4" type="video/mp4" style="padding: 50px 0px 10px 0px;">
+  </video>
+<br>
+Wonky. So basically it just learns this specific orbit.  
+
+Additionally I tried training the network on a broader range of orbits, but that didn't change much.
+
+## Conclusions
+
+This was a rather quick and shallow look into Lagrangian Neural Networks.
+In principle, if you have a relatively large amount of data for a system, but can't figure out the maths, you could just have a LNN learn the Lagrangian and use it to make predictions about what your system might do in the future.     
+
+From the tests I ran it doesn't seem that the network was able to learn the general Lagrangian for the system, but rather just the one with this specific set of initial conditions.   
+
+For me the most interesting part of this is being able to use JAX's auto-differentiation to automatically extract the equations of motion from essentially any arbitrary Lagrangian.  
+
+
+If you find this interesting, have a look at the original paper and the blog post that goes with it. It's a bit more detailed than what I have shown here.
+
+<br>
+
+## BONUS: The Gallery of Shame   
+
+There is nothing I love more than simulations messing up. So, please enjoy the following collection of silly orbits created by networks that were undertrained or too small, or just got stuck during training:  
+
+<head>
+<!-- CSS style to put div side by side -->
+<style type="text/css">  
+        .container {
+            width:800px;
+            height:360px;
+            padding-top:20px;
+            padding-left:15px;
+            padding-right:15px;
+        }
+        #tl-box {
+            float:left;
+            width:360px;
+            height:240px;
+            border:solid black;
+        }
+        #tr-box {
+            float:left;
+            width:360px;
+            height:240px;
+            border:solid black;
+        }
+        #bl-box {
+            float:left;
+            width:360px;
+            height:240px;
+            border:solid black;
+        }
+        #br-box {
+            float:left;
+            width:360px;
+            height:240px;
+            border:solid black;
+        }
+
+</style>  
+</head>
+<body>
+<center>  
+
+<div class="container">
+  <div id="tl-box">
+    <video muted autoplay controls loop width="360" height="240">
+      <source src="/assets/LNN_two_body/funnyorbit2.mp4" type="video/mp4" style="padding: 0px 0px 0px 0px;">
+    </video>
+  </div>
+
+  <div id="tr-box">
+    <video muted autoplay controls loop width="360" height="240">
+      <source src="/assets/LNN_two_body/funnyorbit3.mp4" type="video/mp4" style="padding: 0px 0px 0px 0px;">
+    </video>
+  </div>
+
+  <div id="bl-box">
+  <video muted autoplay controls loop width="360" height="240">
+    <source src="/assets/LNN_two_body/funnyorbit4.mp4" type="video/mp4" style="padding: 0px 0px 0px 0px;">
+  </video>
+  </div>
+
+  <div id="br-box">
+  <video muted autoplay controls loop width="360" height="240">
+    <source src="/assets/LNN_two_body/funnyorbit5.mp4" type="video/mp4" style="padding: 0px 0px 0px 0px;">
+  </video>
+  </div>
+
+
+</div>
+</center>
+</body>
+
+
+[notebook]: https://colab.research.google.com/drive/1iffUdYbFpMKcIP36xQTni57C2OzG7dgi
+[derivation]: http://www.physics.usu.edu/torre/3550_Fall_2012/Lectures/08.pdf
+[paper]: https://arxiv.org/abs/2003.04630
+[jax]: https://github.com/google/jax
+[stat-school]: https://indico.desy.de/indico/event/22731/other-view?view=standard#20191028.detailed
+[blog-post]: https://greydanus.github.io/2020/03/10/lagrangian-nns/
+[jekyll-docs]: https://jekyllrb.com/docs/home
+[jekyll-gh]:   https://github.com/jekyll/jekyll
+[jekyll-talk]: https://talk.jekyllrb.com/
